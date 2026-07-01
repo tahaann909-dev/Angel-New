@@ -414,10 +414,24 @@ async def birthday_check():
 
 
 # ── HELP COMMAND ───────────────────────────────────────────────────────────────
+CATEGORY_TAGLINES = {
+    "moderation": "Maintain order with grace and authority.",
+    "security":   "Precision tools of protection and discretion.",
+    "fun":        "Delight your server with a touch of flair.",
+    "utility":    "Refined tools for everyday elegance.",
+    "economy":    "Fortune favors the well-equipped.",
+    "levels":     "Climb the ranks in style.",
+    "server":     "Curate your server's finest details.",
+    "info":       "Everything worth knowing, beautifully presented.",
+}
+
+HELP_DIVIDER = "⎯" * 38
+
+
 @bot.command()
 async def help(ctx, category: str = None):
     categories = {
-        "moderation": {"emoji": "🛡️", "color": discord.Color.orange(), "commands": [
+        "moderation": {"emoji": "🛡️", "color": discord.Color(0x922B21), "commands": [
             (".kick @user [reason]", "Kick a member"),
             (".ban @user [reason]", "Ban a member"),
             (".unban <user_id>", "Unban a user by ID"),
@@ -471,7 +485,7 @@ async def help(ctx, category: str = None):
             (".baninfo <user_id>", "Why a user was banned"),
             (".mutelist", "Currently timed-out members"),
         ]},
-        "security": {"emoji": "🔒", "color": discord.Color.blue(), "commands": [
+        "security": {"emoji": "🔒", "color": discord.Color(0x1B4F72), "commands": [
             (".addword <word>", "Blacklist a word"),
             (".removeword <word>", "Unblacklist a word"),
             (".blacklist", "Show blacklist"),
@@ -526,7 +540,7 @@ async def help(ctx, category: str = None):
             (".botinfo", "Bot info"),
             (".banlist", "Banned users"),
         ]},
-        "fun": {"emoji": "🎉", "color": discord.Color.purple(), "commands": [
+        "fun": {"emoji": "🎉", "color": discord.Color(0x6C3483), "commands": [
             (".8ball <q>", "Magic 8-ball"),
             (".roll <NdS>", "Roll dice"),
             (".coinflip", "Flip a coin"),
@@ -586,7 +600,7 @@ async def help(ctx, category: str = None):
             (".truth", "Truth"),
             (".dare", "Dare"),
         ]},
-        "utility": {"emoji": "🔧", "color": discord.Color.green(), "commands": [
+        "utility": {"emoji": "🔧", "color": discord.Color(0x117A65), "commands": [
             (".afk [reason]", "Set AFK"),
             (".remind <min> <msg>", "Set a reminder"),
             (".snipe", "Last deleted message"),
@@ -642,7 +656,7 @@ async def help(ctx, category: str = None):
             (".deltag <name>", "Delete a tag"),
             (".tags", "List tags"),
         ]},
-        "economy": {"emoji": "💰", "color": discord.Color.gold(), "commands": [
+        "economy": {"emoji": "💰", "color": discord.Color(0xD4AF37), "commands": [
             (".balance [@user]", "Wallet + bank"),
             (".networth [@user]", "Total net worth"),
             (".daily", "Claim daily"),
@@ -695,7 +709,7 @@ async def help(ctx, category: str = None):
             (".resetcoins @user", "Reset wallet (admin)"),
             (".resetbank @user", "Reset bank (admin)"),
         ]},
-        "levels": {"emoji": "⭐", "color": discord.Color.pink(), "commands": [
+        "levels": {"emoji": "⭐", "color": discord.Color(0xB76E79), "commands": [
             (".level [@user]", "Level + progress"),
             (".lvl [@user]", "Level (alias)"),
             (".levelcheck [@user]", "Level (alias)"),
@@ -748,7 +762,7 @@ async def help(ctx, category: str = None):
             (".xpconfig", "Show XP config"),
             (".resetxpconfig", "Reset XP config (admin)"),
         ]},
-        "server": {"emoji": "⚙️", "color": discord.Color.teal(), "commands": [
+        "server": {"emoji": "⚙️", "color": discord.Color(0x0B5345), "commands": [
             (".setjoinlog #ch", "Set join/leave log"),
             (".removejoinlog", "Remove join/leave log"),
             (".autorole <role>", "Auto-assign role"),
@@ -801,7 +815,7 @@ async def help(ctx, category: str = None):
             (".setservername <name>", "Rename the server"),
             (".settings", "Show server config"),
         ]},
-        "info": {"emoji": "📊", "color": discord.Color.blurple(), "commands": [
+        "info": {"emoji": "📊", "color": discord.Color(0x1F618D), "commands": [
             (".membercount", "Member breakdown"),
             (".humancount", "Human count"),
             (".botcount", "Bot count"),
@@ -861,35 +875,52 @@ async def help(ctx, category: str = None):
         cat = category.lower()
         data = categories[cat]
         cmds = data["commands"]
-        chunks = [cmds[i:i+24] for i in range(0, len(cmds), 24)]
+        chunks = [cmds[i:i + 24] for i in range(0, len(cmds), 24)]
+        tagline = CATEGORY_TAGLINES.get(cat, "")
+
         for idx, chunk in enumerate(chunks):
-            embed = discord.Embed(
-                title=f"{data['emoji']} {cat.capitalize()} Commands" + (f" (Part {idx+1})" if len(chunks) > 1 else ""),
-                color=data["color"]
-            )
-            for cmd, desc in chunk:
-                embed.add_field(name=f"`{cmd}`", value=desc, inline=False)
-            embed.set_footer(text="Use .help for all categories | Prefix: .")
+            page = list(chunk)
+            while len(page) % 3 != 0:
+                page.append((None, None))
+
+            title = f"✦ {data['emoji']}  {cat.upper()}  {data['emoji']} ✦"
+            if len(chunks) > 1:
+                title += f"   ·   Page {idx + 1}/{len(chunks)}"
+            page_desc = f"*{tagline}*\n{HELP_DIVIDER}" if idx == 0 else HELP_DIVIDER
+
+            embed = discord.Embed(title=title, description=page_desc, color=data["color"])
+            for cmd, desc_text in page:
+                if cmd is None:
+                    embed.add_field(name="\u200b", value="\u200b", inline=True)
+                else:
+                    embed.add_field(name=f"`{cmd}`", value=f"*{desc_text}*", inline=True)
+
+            embed.set_thumbnail(url=bot.user.display_avatar.url)
+            embed.set_footer(text="✦ Em-Bot Prestige Suite ✦  Use .help for all categories  |  Prefix: .")
             await ctx.send(embed=embed)
     else:
         total = sum(len(d["commands"]) for d in categories.values())
         embed = discord.Embed(
-            title="📖 Em-Bot — Command Panel",
-            description=f"**{total} commands** across {len(categories)} categories.\nUse `.help <category>` for details.",
-            color=discord.Color.blurple()
+            title="👑  Em-Bot — Prestige Command Suite  👑",
+            description=(
+                f"*A curated collection of* **{total} commands** *across* **{len(categories)} categories**.\n"
+                f"Use `.help <category>` to explore a collection in full.\n{HELP_DIVIDER}"
+            ),
+            color=discord.Color(0xD4AF37)
         )
         for cat, data in categories.items():
             embed.add_field(
-                name=f"{data['emoji']} {cat.capitalize()} — {len(data['commands'])} cmds",
-                value=f"`.help {cat}`",
+                name=f"{data['emoji']}  {cat.capitalize()}",
+                value=f"*{CATEGORY_TAGLINES.get(cat, '')}*\n`{len(data['commands'])} commands`  ·  `.help {cat}`",
                 inline=True
             )
-        if len(categories) % 3 != 0:
+        while len(embed.fields) % 3 != 0:
             embed.add_field(name="\u200b", value="\u200b", inline=True)
+
         if ctx.guild and ctx.guild.icon:
             embed.set_thumbnail(url=ctx.guild.icon.url)
         embed.set_footer(
-            text=f"Requested by {ctx.author} | {total} total commands",
+            text=f"Requested by {ctx.author} ✦ {total} commands curated for you",
             icon_url=ctx.author.display_avatar.url
         )
         await ctx.send(embed=embed)
@@ -2193,7 +2224,7 @@ howlucky = bot.command(name="howlucky")(_rating("lucky", "🍀"))
 howhot   = bot.command(name="howhot")(_rating("hot", "🔥"))
 howfunny = bot.command(name="howfunny")(_rating("funny", "😂"))
 howgay   = bot.command(name="howgay")(_rating("gay", "🌈"))
-howcringe= bot.command(name="howcringe")(_rating("cringe", "😬"))
+howcringe = bot.command(name="howcringe")(_rating("cringe", "😬"))
 howbased = bot.command(name="howbased")(_rating("based", "😤"))
 simp     = bot.command(name="simp")(_rating("simp", "💘"))
 sus      = bot.command(name="sus")(_rating("sus", "📮"))
