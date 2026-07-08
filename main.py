@@ -266,51 +266,76 @@ class RulesView(discord.ui.View):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label="I accept the rules", style=discord.ButtonStyle.success,
+        label="J'accepte les règles", style=discord.ButtonStyle.success,
         emoji="\u2705", custom_id="rules_accept",
     )
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
         rid = role_id("member")
         if rid is None:
             return await interaction.response.send_message(
-                "\u2705 Thanks for accepting the rules!", ephemeral=True)
+                "\u2705 Merci d'avoir accepté les règles !", ephemeral=True)
 
         role = interaction.guild.get_role(rid)
         if role is None:
             return await interaction.response.send_message(
-                "\u26a0\ufe0f Member role not found — please contact staff.", ephemeral=True)
+                "\u26a0\ufe0f Rôle Membre introuvable — contactez le staff.", ephemeral=True)
 
         if role in interaction.user.roles:
             return await interaction.response.send_message(
-                "\u2139\ufe0f You already have access.", ephemeral=True)
+                "\u2139\ufe0f Vous avez déjà accès.", ephemeral=True)
 
-        await interaction.user.add_roles(role, reason="Accepted the rules")
+        await interaction.user.add_roles(role, reason="A accepté les règles")
         await interaction.response.send_message(
-            f"\u2705 Thanks! You've been given the **{role.name}** role.", ephemeral=True)
+            f"\u2705 Merci ! Le rôle **{role.name}** vous a été attribué.", ephemeral=True)
 
 
-@tree.command(name="rules", description="Post the server rules panel (staff)")
+@tree.command(name="rules", description="Poster le panneau des règles (staff)")
 @app_commands.default_permissions(manage_guild=True)
 async def cmd_rules(interaction: discord.Interaction):
     embed = discord.Embed(
         color=color("primary"),
-        title="\U0001F4DC Server Rules",
+        title="\U0001F4DC Règles du serveur",
         description="\n".join([
-            "**1.** Be respectful — no harassment, hate speech, or discrimination.",
-            "**2.** No spam, mass mentions, or self-promotion without permission.",
-            "**3.** Keep content safe for work; no NSFW or shocking material.",
-            "**4.** Use channels for their intended topics.",
-            "**5.** No sharing of others' personal information (doxxing).",
-            "**6.** Listen to the staff team and follow Discord's Terms of Service.",
+            "**1. Respect :** Traitez tous les membres et le personnel avec respect. "
+            "Maintenez un environnement amical, mature et approprié.",
+            "**2. Pas de discours de haine :** Le racisme, le sexisme, l'homophobie ou tout "
+            "contenu dégradant sont strictement interdits. Soutenir ou adopter un tel "
+            "comportement entraînera un bannissement.",
+            "**3. Blagues appropriées :** Les blagues inappropriées sont strictement interdites.",
+            "**4. Pas de NSFW :** Le contenu ou les discussions NSFW (y compris tout matériel "
+            "similaire) ne sont pas autorisés.",
+            "**5. Pas de publicité :** La publicité sur ce serveur est interdite.",
+            "**6. Vie privée :** Ne demandez pas, ne partagez pas et ne divulguez pas "
+            "d'informations personnelles. Cela est strictement interdit.",
+            "**7. Utilisation des salons :** Utilisez les salons uniquement pour l'usage auquel "
+            "ils sont destinés. Le spam ou la mauvaise utilisation des salons est interdit.",
+            "**8. Pseudos :** Ne gardez pas de pseudos ou surnoms inappropriés ; ils seront "
+            "modérés.",
+            "**9. Filtres :** Tenter de contourner les filtres de mots ou le système "
+            "d'auto-modération du serveur est interdit.",
+            "**10. Pas de menaces :** Les menaces de toute nature envers les membres ou "
+            "quiconque ne seront pas tolérées.",
+            "**11. Pas de contournement des règles :** N'essayez pas de contourner les règles "
+            "du serveur.",
+            "**12. Pas de mendicité :** Demander de manière insistante des objets gratuits tels "
+            "que des boosts, des gamepasses ou des produits n'est pas autorisé.",
             "",
-            "Click the button below to confirm you've read and agree to the rules.",
+            "Profitez bien du serveur ! Veuillez respecter les règles :",
+            "\u2022 Discord Terms : https://discord.com/terms",
+            "\u2022 Discord Guidelines : https://discord.com/guidelines",
+            "\u2022 Roblox Terms : https://en.help.roblox.com/hc/en-us/articles/"
+            "115004647846-Roblox-Terms-of-Use",
+            "",
+            "Cliquez sur le bouton ci-dessous pour confirmer que vous avez lu et accepté "
+            "les règles.",
         ]),
     )
-    embed.set_footer(text="Breaking the rules may result in sanctions.")
+    embed.set_footer(text="Enfreindre les règles peut entraîner des sanctions.")
 
     target = get_channel(interaction.guild, CONFIG["channels"]["rules"]) or interaction.channel
     await target.send(embed=embed, view=RulesView())
-    await interaction.response.send_message(f"\u2705 Rules posted in {target.mention}.", ephemeral=True)
+    await interaction.response.send_message(
+        f"\u2705 Règles postées dans {target.mention}.", ephemeral=True)
 
 
 # =========================== ANNOUNCEMENTS ===================================
@@ -671,6 +696,52 @@ async def cmd_sanctions(interaction: discord.Interaction, user: discord.User):
     )
     embed.set_footer(text=f"{len(records)} total record(s)")
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@tree.command(name="clear", description="Supprimer un nombre de messages dans ce salon")
+@app_commands.describe(amount="Nombre de messages à supprimer (1-100)",
+                       user="Optionnel : ne supprimer que les messages de ce membre")
+@app_commands.default_permissions(manage_messages=True)
+async def cmd_clear(interaction: discord.Interaction, amount: int,
+                    user: discord.User = None):
+    if amount < 1 or amount > 100:
+        return await interaction.response.send_message(
+            "\u274c Choisissez un nombre entre 1 et 100.", ephemeral=True)
+
+    # channels must be text-capable for bulk delete
+    if not isinstance(interaction.channel, (discord.TextChannel, discord.Thread,
+                                            discord.VoiceChannel)):
+        return await interaction.response.send_message(
+            "\u274c Impossible de supprimer des messages ici.", ephemeral=True)
+
+    await interaction.response.defer(ephemeral=True)
+
+    def check(m: discord.Message) -> bool:
+        return user is None or m.author.id == user.id
+
+    try:
+        # bulk_delete only works on messages younger than 14 days
+        deleted = await interaction.channel.purge(limit=amount, check=check)
+    except discord.Forbidden:
+        return await interaction.followup.send(
+            "\u274c Il me manque la permission **Gérer les messages**.", ephemeral=True)
+    except discord.HTTPException as exc:
+        return await interaction.followup.send(
+            f"\u274c Échec de la suppression : {exc}", ephemeral=True)
+
+    who = f" de {user.mention}" if user else ""
+    await interaction.followup.send(
+        f"\U0001F9F9 {len(deleted)} message(s){who} supprimé(s).", ephemeral=True)
+
+    # log it if a mod-log channel is configured
+    log_embed = discord.Embed(color=color("warning"), title="\U0001F9F9 Messages supprimés")
+    log_embed.add_field(name="Salon", value=interaction.channel.mention, inline=True)
+    log_embed.add_field(name="Quantité", value=str(len(deleted)), inline=True)
+    log_embed.add_field(name="Modérateur", value=interaction.user.mention, inline=True)
+    if user:
+        log_embed.add_field(name="Cible", value=f"{user} ({user.id})", inline=False)
+    log_embed.timestamp = discord.utils.utcnow()
+    await log_to_mod_channel(interaction.guild, log_embed)
 
 
 @tree.command(name="clear-sanctions", description="Clear a member's sanctions (admin)")
