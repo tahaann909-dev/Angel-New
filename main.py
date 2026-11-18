@@ -24,6 +24,7 @@ BOT_WHITELIST = set()
 BLACKLIST_FILE = "blacklist.json"
 RAID_LOG_CHANNEL_NAME = "mod-logs"
 AUTOROLE_NAME = "Membres Guerilla 🏳️"
+AUTOROLE_ID = None  # remplace par l'ID du role (ex: 1234567890) pour un match 100% fiable
 
 intents = discord.Intents.default()
 intents.members = True
@@ -99,6 +100,22 @@ async def auto_unlockdown(guild, reason):
     await log_action(guild, f"FIN AUTO-LOCKDOWN ({count} salons) - {reason}")
 
 
+def _normalize(s: str) -> str:
+    return "".join(c for c in (s or "") if c != "️").casefold().strip()
+
+
+def find_autorole(guild):
+    if AUTOROLE_ID:
+        r = guild.get_role(AUTOROLE_ID)
+        if r:
+            return r
+    target = _normalize(AUTOROLE_NAME)
+    for r in guild.roles:
+        if _normalize(r.name) == target:
+            return r
+    return None
+
+
 def raid_active(guild_id):
     started = raid_mode.get(guild_id)
     if not started:
@@ -155,16 +172,29 @@ async def on_member_join(member):
         except discord.Forbidden:
             await log_action(guild, f"Ban impossible sur {member}")
 
-    role = discord.utils.get(guild.roles, name=AUTOROLE_NAME)
-    if role is not None:
+    role = find_autorole(guild)
+    if role is None:
+        noms = ", ".join(repr(r.name) for r in guild.roles if "guerilla" in r.name.lower())
+        await log_action(
+            guild,
+            f"Auto-role : role '{AUTOROLE_NAME}' introuvable. "
+            f"Roles contenant 'guerilla' : {noms or 'aucun'}"
+        )
+    elif role >= guild.me.top_role:
+        await log_action(
+            guild,
+            f"Auto-role : le role '{role.name}' est AU-DESSUS du role du bot "
+            f"({guild.me.top_role.name}). Remonte le role du bot dans la hierarchie."
+        )
+    elif not guild.me.guild_permissions.manage_roles:
+        await log_action(guild, "Auto-role : permission 'Gerer les roles' manquante sur le bot.")
+    else:
         try:
             await member.add_roles(role, reason="Auto-role a l'arrivee")
         except discord.Forbidden:
-            await log_action(guild, f"Auto-role impossible sur {member} (permissions)")
+            await log_action(guild, f"Auto-role refuse sur {member} (Forbidden)")
         except discord.HTTPException as e:
             await log_action(guild, f"Auto-role echoue sur {member} : {e}")
-    else:
-        await log_action(guild, f"Role '{AUTOROLE_NAME}' introuvable pour auto-role")
 
     is_young = account_age < timedelta(days=RAID_SUSPICIOUS_AGE_DAYS)
 
