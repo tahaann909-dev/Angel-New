@@ -5,22 +5,23 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 TOKEN = os.getenv("DISCORD_TOKEN")
-PREFIX = "+"
+PREFIX = "/"
 
 MIN_ACCOUNT_AGE_DAYS = 2
 RAID_JOIN_THRESHOLD = 5
 RAID_JOIN_WINDOW = 10
 RAID_AUTO_LOCKDOWN = True
-RAID_AUTO_ACTION = "kick"  # "kick", "ban" ou "none" pour les joins pendant un raid
-RAID_COOLDOWN = 300  # duree (s) pendant laquelle le mode raid reste actif
+RAID_AUTO_ACTION = "kick"
+RAID_COOLDOWN = 300
 BOT_WHITELIST = set()
 
 BLACKLIST_FILE = "blacklist.json"
 RAID_LOG_CHANNEL_NAME = "mod-logs"
-AUTOROLE_NAME = "guerilla"
+AUTOROLE_NAME = "Membres Guerilla 🏳️"
 
 intents = discord.Intents.default()
 intents.members = True
@@ -44,10 +45,9 @@ def save_blacklist(words):
 
 
 blacklist = load_blacklist()
-
 recent_joins = {}
-raid_mode = {}          # guild.id -> timestamp de debut du raid
-locked_channels = {}    # guild.id -> set de channel.id verrouilles automatiquement
+raid_mode = {}
+locked_channels = {}
 
 
 async def get_log_channel(guild):
@@ -65,13 +65,12 @@ async def log_action(guild, msg):
 
 
 async def auto_lockdown(guild, reason):
-    """Verrouille tous les salons textuels et memorise lesquels on a touches."""
     locked = set()
     for ch in guild.text_channels:
         try:
             ow = ch.overwrites_for(guild.default_role)
             if ow.send_messages is False:
-                continue  # deja verrouille, on ne le touche pas
+                continue
             ow.send_messages = False
             await ch.set_permissions(guild.default_role, overwrite=ow, reason=reason)
             locked.add(ch.id)
@@ -82,7 +81,6 @@ async def auto_lockdown(guild, reason):
 
 
 async def auto_unlockdown(guild, reason):
-    """Deverrouille uniquement les salons verrouilles par l'auto-lockdown."""
     ids = locked_channels.pop(guild.id, set())
     count = 0
     for ch_id in ids:
@@ -112,7 +110,11 @@ def raid_active(guild_id):
 @bot.event
 async def on_ready():
     print(f"Connecte en tant que {bot.user} (ID: {bot.user.id})")
-    print(f"Prefixe : {PREFIX}")
+    try:
+        synced = await bot.tree.sync()
+        print(f"Slash commands synchronisees : {len(synced)}")
+    except Exception as e:
+        print(f"Erreur sync slash : {e}")
     print(f"Serveurs : {len(bot.guilds)}")
 
 
@@ -145,14 +147,12 @@ async def on_member_join(member):
             )
             await log_action(
                 guild,
-                f"Ban auto : {member} - compte cree il y a {account_age.days}j "
-                f"({member.created_at:%Y-%m-%d})"
+                f"Ban auto : {member} - compte cree il y a {account_age.days}j"
             )
             return
         except discord.Forbidden:
             await log_action(guild, f"Ban impossible sur {member}")
 
-    # --- Auto-role ---
     role = discord.utils.get(guild.roles, name=AUTOROLE_NAME)
     if role is not None:
         try:
@@ -164,26 +164,23 @@ async def on_member_join(member):
     else:
         await log_action(guild, f"Role '{AUTOROLE_NAME}' introuvable pour auto-role")
 
-    # --- Anti-raid ---
     q = recent_joins.setdefault(guild.id, deque())
     q.append(time.time())
     while q and time.time() - q[0] > RAID_JOIN_WINDOW:
         q.popleft()
 
-    # Si un raid est deja en cours, on applique l'action automatique aux nouveaux arrivants
     if raid_active(guild.id):
         try:
             if RAID_AUTO_ACTION == "ban":
                 await member.ban(reason="Raid en cours", delete_message_days=0)
-                await log_action(guild, f"[RAID] Ban auto : {member} ({member.id})")
+                await log_action(guild, f"[RAID] Ban auto : {member}")
             elif RAID_AUTO_ACTION == "kick":
                 await member.kick(reason="Raid en cours")
-                await log_action(guild, f"[RAID] Kick auto : {member} ({member.id})")
+                await log_action(guild, f"[RAID] Kick auto : {member}")
         except discord.Forbidden:
             await log_action(guild, f"[RAID] Action impossible sur {member}")
         return
 
-    # Declenchement d'un raid
     if len(q) >= RAID_JOIN_THRESHOLD:
         raid_mode[guild.id] = time.time()
         await log_action(
@@ -219,169 +216,182 @@ async def on_message(message):
     await bot.process_commands(message)
 
 
-def is_mod():
-    async def predicate(ctx):
-        return ctx.author.guild_permissions.manage_messages
-    return commands.check(predicate)
+def mod_check(interaction: discord.Interaction) -> bool:
+    return interaction.user.guild_permissions.manage_messages
 
 
-def is_admin():
-    async def predicate(ctx):
-        return ctx.author.guild_permissions.administrator
-    return commands.check(predicate)
+def admin_check(interaction: discord.Interaction) -> bool:
+    return interaction.user.guild_permissions.administrator
 
 
-@bot.group(invoke_without_command=True, name="blacklist")
-@is_mod()
-async def blacklist_cmd(ctx):
-    if not blacklist:
-        await ctx.send("Blacklist vide.")
-    else:
-        await ctx.send("Blacklist : " + ", ".join(f"`{w}`" for w in sorted(blacklist)))
-
-
-@blacklist_cmd.command(name="add")
-@is_mod()
-async def bl_add(ctx, *, word):
-    blacklist.add(word.lower())
-    save_blacklist(blacklist)
-    await ctx.send(f"`{word}` ajoute a la blacklist.")
-
-
-@blacklist_cmd.command(name="remove")
-@is_mod()
-async def bl_remove(ctx, *, word):
-    blacklist.discard(word.lower())
-    save_blacklist(blacklist)
-    await ctx.send(f"`{word}` retire de la blacklist.")
-
-
-@bot.command()
-@is_mod()
-async def lock(ctx, channel: discord.TextChannel = None):
-    channel = channel or ctx.channel
-    overwrite = channel.overwrites_for(ctx.guild.default_role)
-    overwrite.send_messages = False
-    await channel.set_permissions(ctx.guild.default_role, overwrite=overwrite,
-                                  reason=f"Lock par {ctx.author}")
-    await ctx.send(f"{channel.mention} verrouille.")
-    await log_action(ctx.guild, f"{channel.mention} lock par {ctx.author}")
-
-
-@bot.command()
-@is_mod()
-async def unlock(ctx, channel: discord.TextChannel = None):
-    channel = channel or ctx.channel
-    overwrite = channel.overwrites_for(ctx.guild.default_role)
-    overwrite.send_messages = None
-    await channel.set_permissions(ctx.guild.default_role, overwrite=overwrite,
-                                  reason=f"Unlock par {ctx.author}")
-    await ctx.send(f"{channel.mention} deverrouille.")
-    await log_action(ctx.guild, f"{channel.mention} unlock par {ctx.author}")
-
-
-@bot.command()
-@is_mod()
-async def lockall(ctx):
-    count = 0
-    for ch in ctx.guild.text_channels:
-        try:
-            ow = ch.overwrites_for(ctx.guild.default_role)
-            ow.send_messages = False
-            await ch.set_permissions(ctx.guild.default_role, overwrite=ow,
-                                     reason=f"Lockdown par {ctx.author}")
-            count += 1
-        except discord.Forbidden:
-            pass
-    await ctx.send(f"Lockdown : {count} salons verrouilles.")
-    await log_action(ctx.guild, f"LOCKDOWN total par {ctx.author} ({count} salons)")
-
-
-@bot.command()
-@is_mod()
-async def unlockall(ctx):
-    count = 0
-    for ch in ctx.guild.text_channels:
-        try:
-            ow = ch.overwrites_for(ctx.guild.default_role)
-            ow.send_messages = None
-            await ch.set_permissions(ctx.guild.default_role, overwrite=ow,
-                                     reason=f"Fin lockdown par {ctx.author}")
-            count += 1
-        except discord.Forbidden:
-            pass
-    raid_mode.pop(ctx.guild.id, None)
-    locked_channels.pop(ctx.guild.id, None)
-    await ctx.send(f"{count} salons deverrouilles.")
-    await log_action(ctx.guild, f"Fin du lockdown par {ctx.author} ({count} salons)")
-
-
-@bot.command(name="clear")
-@is_mod()
-async def clear(ctx, amount: int):
-    """Supprime <amount> messages dans le salon courant."""
-    if amount < 1 or amount > 1000:
-        await ctx.send("Donne un nombre entre 1 et 1000.")
+@bot.tree.command(name="clear", description="Supprime un nombre de messages dans le salon")
+@app_commands.describe(amount="Nombre de messages a supprimer (1-1000)")
+async def clear(interaction: discord.Interaction, amount: int):
+    if not mod_check(interaction):
+        await interaction.response.send_message("Permissions manquantes.", ephemeral=True)
         return
+    if amount < 1 or amount > 1000:
+        await interaction.response.send_message("Donne un nombre entre 1 et 1000.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
     try:
-        await ctx.message.delete()
-    except discord.HTTPException:
-        pass
-    try:
-        deleted = await ctx.channel.purge(limit=amount)
-        msg = await ctx.send(f"{len(deleted)} messages supprimes.", delete_after=5)
+        deleted = await interaction.channel.purge(limit=amount)
+        await interaction.followup.send(f"{len(deleted)} messages supprimes.", ephemeral=True)
         await log_action(
-            ctx.guild,
-            f"{ctx.author} a clear {len(deleted)} messages dans {ctx.channel.mention}"
+            interaction.guild,
+            f"{interaction.user} a clear {len(deleted)} messages dans {interaction.channel.mention}"
         )
     except discord.Forbidden:
-        await ctx.send("Permissions manquantes pour supprimer les messages.")
+        await interaction.followup.send("Permissions manquantes pour supprimer.", ephemeral=True)
 
 
-# --- Commandes anti-raid manuelles ---
+@bot.tree.command(name="lock", description="Verrouille un salon")
+@app_commands.describe(channel="Salon a verrouiller (celui courant par defaut)")
+async def lock(interaction: discord.Interaction, channel: discord.TextChannel = None):
+    if not mod_check(interaction):
+        await interaction.response.send_message("Permissions manquantes.", ephemeral=True)
+        return
+    channel = channel or interaction.channel
+    ow = channel.overwrites_for(interaction.guild.default_role)
+    ow.send_messages = False
+    await channel.set_permissions(interaction.guild.default_role, overwrite=ow,
+                                  reason=f"Lock par {interaction.user}")
+    await interaction.response.send_message(f"{channel.mention} verrouille.")
+    await log_action(interaction.guild, f"{channel.mention} lock par {interaction.user}")
 
-@bot.command(name="raid")
-@is_admin()
-async def raid_status(ctx):
-    """Affiche l'etat du mode anti-raid."""
-    if raid_active(ctx.guild.id):
-        since = int(time.time() - raid_mode[ctx.guild.id])
-        await ctx.send(f"Mode raid ACTIF depuis {since}s (action : {RAID_AUTO_ACTION}).")
+
+@bot.tree.command(name="unlock", description="Deverrouille un salon")
+@app_commands.describe(channel="Salon a deverrouiller")
+async def unlock(interaction: discord.Interaction, channel: discord.TextChannel = None):
+    if not mod_check(interaction):
+        await interaction.response.send_message("Permissions manquantes.", ephemeral=True)
+        return
+    channel = channel or interaction.channel
+    ow = channel.overwrites_for(interaction.guild.default_role)
+    ow.send_messages = None
+    await channel.set_permissions(interaction.guild.default_role, overwrite=ow,
+                                  reason=f"Unlock par {interaction.user}")
+    await interaction.response.send_message(f"{channel.mention} deverrouille.")
+    await log_action(interaction.guild, f"{channel.mention} unlock par {interaction.user}")
+
+
+@bot.tree.command(name="lockall", description="Verrouille tous les salons")
+async def lockall(interaction: discord.Interaction):
+    if not mod_check(interaction):
+        await interaction.response.send_message("Permissions manquantes.", ephemeral=True)
+        return
+    await interaction.response.defer()
+    count = 0
+    for ch in interaction.guild.text_channels:
+        try:
+            ow = ch.overwrites_for(interaction.guild.default_role)
+            ow.send_messages = False
+            await ch.set_permissions(interaction.guild.default_role, overwrite=ow,
+                                     reason=f"Lockdown par {interaction.user}")
+            count += 1
+        except discord.Forbidden:
+            pass
+    await interaction.followup.send(f"Lockdown : {count} salons verrouilles.")
+    await log_action(interaction.guild, f"LOCKDOWN total par {interaction.user} ({count} salons)")
+
+
+@bot.tree.command(name="unlockall", description="Deverrouille tous les salons")
+async def unlockall(interaction: discord.Interaction):
+    if not mod_check(interaction):
+        await interaction.response.send_message("Permissions manquantes.", ephemeral=True)
+        return
+    await interaction.response.defer()
+    count = 0
+    for ch in interaction.guild.text_channels:
+        try:
+            ow = ch.overwrites_for(interaction.guild.default_role)
+            ow.send_messages = None
+            await ch.set_permissions(interaction.guild.default_role, overwrite=ow,
+                                     reason=f"Fin lockdown par {interaction.user}")
+            count += 1
+        except discord.Forbidden:
+            pass
+    raid_mode.pop(interaction.guild.id, None)
+    locked_channels.pop(interaction.guild.id, None)
+    await interaction.followup.send(f"{count} salons deverrouilles.")
+    await log_action(interaction.guild, f"Fin du lockdown par {interaction.user} ({count} salons)")
+
+
+blacklist_group = app_commands.Group(name="blacklist", description="Gestion de la blacklist")
+
+
+@blacklist_group.command(name="list", description="Affiche la blacklist")
+async def bl_list(interaction: discord.Interaction):
+    if not mod_check(interaction):
+        await interaction.response.send_message("Permissions manquantes.", ephemeral=True)
+        return
+    if not blacklist:
+        await interaction.response.send_message("Blacklist vide.")
     else:
-        await ctx.send("Mode raid inactif.")
+        await interaction.response.send_message(
+            "Blacklist : " + ", ".join(f"`{w}`" for w in sorted(blacklist))
+        )
 
 
-@bot.command(name="raidon")
-@is_admin()
-async def raid_on(ctx):
-    """Active manuellement le mode anti-raid + lockdown."""
-    raid_mode[ctx.guild.id] = time.time()
-    await ctx.send(f"Mode raid ACTIVE manuellement ({RAID_AUTO_ACTION}).")
-    await log_action(ctx.guild, f"Mode raid active manuellement par {ctx.author}")
+@blacklist_group.command(name="add", description="Ajoute un mot a la blacklist")
+@app_commands.describe(word="Mot a ajouter")
+async def bl_add(interaction: discord.Interaction, word: str):
+    if not mod_check(interaction):
+        await interaction.response.send_message("Permissions manquantes.", ephemeral=True)
+        return
+    blacklist.add(word.lower())
+    save_blacklist(blacklist)
+    await interaction.response.send_message(f"`{word}` ajoute a la blacklist.")
+
+
+@blacklist_group.command(name="remove", description="Retire un mot de la blacklist")
+@app_commands.describe(word="Mot a retirer")
+async def bl_remove(interaction: discord.Interaction, word: str):
+    if not mod_check(interaction):
+        await interaction.response.send_message("Permissions manquantes.", ephemeral=True)
+        return
+    blacklist.discard(word.lower())
+    save_blacklist(blacklist)
+    await interaction.response.send_message(f"`{word}` retire de la blacklist.")
+
+
+bot.tree.add_command(blacklist_group)
+
+
+@bot.tree.command(name="raid", description="Etat du mode anti-raid")
+async def raid_status(interaction: discord.Interaction):
+    if not admin_check(interaction):
+        await interaction.response.send_message("Permissions manquantes.", ephemeral=True)
+        return
+    if raid_active(interaction.guild.id):
+        since = int(time.time() - raid_mode[interaction.guild.id])
+        await interaction.response.send_message(
+            f"Mode raid ACTIF depuis {since}s (action : {RAID_AUTO_ACTION})."
+        )
+    else:
+        await interaction.response.send_message("Mode raid inactif.")
+
+
+@bot.tree.command(name="raidon", description="Active manuellement le mode anti-raid")
+async def raid_on(interaction: discord.Interaction):
+    if not admin_check(interaction):
+        await interaction.response.send_message("Permissions manquantes.", ephemeral=True)
+        return
+    raid_mode[interaction.guild.id] = time.time()
+    await interaction.response.send_message(f"Mode raid ACTIVE ({RAID_AUTO_ACTION}).")
+    await log_action(interaction.guild, f"Mode raid active manuellement par {interaction.user}")
     if RAID_AUTO_LOCKDOWN:
-        await auto_lockdown(ctx.guild, reason=f"Anti-raid manuel ({ctx.author})")
+        await auto_lockdown(interaction.guild, reason=f"Anti-raid manuel ({interaction.user})")
 
 
-@bot.command(name="raidoff")
-@is_admin()
-async def raid_off(ctx):
-    """Desactive le mode anti-raid et deverrouille les salons auto."""
-    raid_mode.pop(ctx.guild.id, None)
-    await auto_unlockdown(ctx.guild, reason=f"Fin raid manuelle ({ctx.author})")
-    await ctx.send("Mode raid DESACTIVE.")
-
-
-@bot.event
-async def on_command_error(ctx, error):
-    if isinstance(error, commands.CheckFailure):
-        await ctx.send("Tu n'as pas les permissions.")
-    elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(f"Argument manquant : `{error.param.name}`")
-    elif isinstance(error, commands.CommandNotFound):
-        pass
-    else:
-        await ctx.send(f"Erreur : `{error}`")
-        raise error
+@bot.tree.command(name="raidoff", description="Desactive le mode anti-raid")
+async def raid_off(interaction: discord.Interaction):
+    if not admin_check(interaction):
+        await interaction.response.send_message("Permissions manquantes.", ephemeral=True)
+        return
+    raid_mode.pop(interaction.guild.id, None)
+    await auto_unlockdown(interaction.guild, reason=f"Fin raid manuelle ({interaction.user})")
+    await interaction.response.send_message("Mode raid DESACTIVE.")
 
 
 if __name__ == "__main__":
