@@ -20,6 +20,7 @@ BOT_WHITELIST = set()
 
 BLACKLIST_FILE = "blacklist.json"
 RAID_LOG_CHANNEL_NAME = "mod-logs"
+AUTOROLE_NAME = "guerilla"
 
 intents = discord.Intents.default()
 intents.members = True
@@ -150,6 +151,18 @@ async def on_member_join(member):
             return
         except discord.Forbidden:
             await log_action(guild, f"Ban impossible sur {member}")
+
+    # --- Auto-role ---
+    role = discord.utils.get(guild.roles, name=AUTOROLE_NAME)
+    if role is not None:
+        try:
+            await member.add_roles(role, reason="Auto-role a l'arrivee")
+        except discord.Forbidden:
+            await log_action(guild, f"Auto-role impossible sur {member} (permissions)")
+        except discord.HTTPException as e:
+            await log_action(guild, f"Auto-role echoue sur {member} : {e}")
+    else:
+        await log_action(guild, f"Role '{AUTOROLE_NAME}' introuvable pour auto-role")
 
     # --- Anti-raid ---
     q = recent_joins.setdefault(guild.id, deque())
@@ -301,6 +314,28 @@ async def unlockall(ctx):
     locked_channels.pop(ctx.guild.id, None)
     await ctx.send(f"{count} salons deverrouilles.")
     await log_action(ctx.guild, f"Fin du lockdown par {ctx.author} ({count} salons)")
+
+
+@bot.command(name="clear")
+@is_mod()
+async def clear(ctx, amount: int):
+    """Supprime <amount> messages dans le salon courant."""
+    if amount < 1 or amount > 1000:
+        await ctx.send("Donne un nombre entre 1 et 1000.")
+        return
+    try:
+        await ctx.message.delete()
+    except discord.HTTPException:
+        pass
+    try:
+        deleted = await ctx.channel.purge(limit=amount)
+        msg = await ctx.send(f"{len(deleted)} messages supprimes.", delete_after=5)
+        await log_action(
+            ctx.guild,
+            f"{ctx.author} a clear {len(deleted)} messages dans {ctx.channel.mention}"
+        )
+    except discord.Forbidden:
+        await ctx.send("Permissions manquantes pour supprimer les messages.")
 
 
 # --- Commandes anti-raid manuelles ---
