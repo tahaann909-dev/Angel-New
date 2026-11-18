@@ -8,11 +8,14 @@ import discord
 from discord.ext import commands
 
 TOKEN = os.getenv("DISCORD_TOKEN")
-PREFIX = "!"
+PREFIX = "+"
 
 MIN_ACCOUNT_AGE_DAYS = 2
 RAID_JOIN_THRESHOLD = 5
 RAID_JOIN_WINDOW = 10
+RAID_AUTO_LOCKDOWN = True
+RAID_AUTO_ACTION = "kick"  # "kick", "ban" ou "none" pour les joins pendant un raid
+RAID_COOLDOWN = 300  # duree (s) pendant laquelle le mode raid reste actif
 BOT_WHITELIST = set()
 
 BLACKLIST_FILE = "blacklist.json"
@@ -42,7 +45,8 @@ def save_blacklist(words):
 blacklist = load_blacklist()
 
 recent_joins = {}
-raid_mode = {}
+raid_mode = {}          # guild.id -> timestamp de debut du raid
+locked_channels = {}    # guild.id -> set de channel.id verrouilles automatiquement
 
 
 async def get_log_channel(guild):
@@ -59,9 +63,55 @@ async def log_action(guild, msg):
     print(f"[{guild.name}] {msg}")
 
 
+async def auto_lockdown(guild, reason):
+    """Verrouille tous les salons textuels et memorise lesquels on a touches."""
+    locked = set()
+    for ch in guild.text_channels:
+        try:
+            ow = ch.overwrites_for(guild.default_role)
+            if ow.send_messages is False:
+                continue  # deja verrouille, on ne le touche pas
+            ow.send_messages = False
+            await ch.set_permissions(guild.default_role, overwrite=ow, reason=reason)
+            locked.add(ch.id)
+        except discord.Forbidden:
+            pass
+    locked_channels[guild.id] = locked
+    await log_action(guild, f"AUTO-LOCKDOWN ({len(locked)} salons) - {reason}")
+
+
+async def auto_unlockdown(guild, reason):
+    """Deverrouille uniquement les salons verrouilles par l'auto-lockdown."""
+    ids = locked_channels.pop(guild.id, set())
+    count = 0
+    for ch_id in ids:
+        ch = guild.get_channel(ch_id)
+        if ch is None:
+            continue
+        try:
+            ow = ch.overwrites_for(guild.default_role)
+            ow.send_messages = None
+            await ch.set_permissions(guild.default_role, overwrite=ow, reason=reason)
+            count += 1
+        except discord.Forbidden:
+            pass
+    await log_action(guild, f"FIN AUTO-LOCKDOWN ({count} salons) - {reason}")
+
+
+def raid_active(guild_id):
+    started = raid_mode.get(guild_id)
+    if not started:
+        return False
+    if time.time() - started > RAID_COOLDOWN:
+        raid_mode.pop(guild_id, None)
+        return False
+    return True
+
+
 @bot.event
 async def on_ready():
     print(f"Connecte en tant que {bot.user} (ID: {bot.user.id})")
+    print(f"Prefixe : {PREFIX}")
     print(f"Serveurs : {len(bot.guilds)}")
 
 
@@ -101,18 +151,35 @@ async def on_member_join(member):
         except discord.Forbidden:
             await log_action(guild, f"Ban impossible sur {member}")
 
+    # --- Anti-raid ---
     q = recent_joins.setdefault(guild.id, deque())
     q.append(time.time())
     while q and time.time() - q[0] > RAID_JOIN_WINDOW:
         q.popleft()
 
-    if len(q) >= RAID_JOIN_THRESHOLD and not raid_mode.get(guild.id):
-        raid_mode[guild.id] = True
+    # Si un raid est deja en cours, on applique l'action automatique aux nouveaux arrivants
+    if raid_active(guild.id):
+        try:
+            if RAID_AUTO_ACTION == "ban":
+                await member.ban(reason="Raid en cours", delete_message_days=0)
+                await log_action(guild, f"[RAID] Ban auto : {member} ({member.id})")
+            elif RAID_AUTO_ACTION == "kick":
+                await member.kick(reason="Raid en cours")
+                await log_action(guild, f"[RAID] Kick auto : {member} ({member.id})")
+        except discord.Forbidden:
+            await log_action(guild, f"[RAID] Action impossible sur {member}")
+        return
+
+    # Declenchement d'un raid
+    if len(q) >= RAID_JOIN_THRESHOLD:
+        raid_mode[guild.id] = time.time()
         await log_action(
             guild,
             f"RAID DETECTE - {len(q)} joins en {RAID_JOIN_WINDOW}s. "
-            f"Lockdown conseille ({PREFIX}lockall)."
+            f"Action auto : {RAID_AUTO_ACTION}."
         )
+        if RAID_AUTO_LOCKDOWN:
+            await auto_lockdown(guild, reason="Anti-raid automatique")
 
 
 @bot.event
@@ -142,6 +209,12 @@ async def on_message(message):
 def is_mod():
     async def predicate(ctx):
         return ctx.author.guild_permissions.manage_messages
+    return commands.check(predicate)
+
+
+def is_admin():
+    async def predicate(ctx):
+        return ctx.author.guild_permissions.administrator
     return commands.check(predicate)
 
 
@@ -224,9 +297,43 @@ async def unlockall(ctx):
             count += 1
         except discord.Forbidden:
             pass
-    raid_mode[ctx.guild.id] = False
+    raid_mode.pop(ctx.guild.id, None)
+    locked_channels.pop(ctx.guild.id, None)
     await ctx.send(f"{count} salons deverrouilles.")
     await log_action(ctx.guild, f"Fin du lockdown par {ctx.author} ({count} salons)")
+
+
+# --- Commandes anti-raid manuelles ---
+
+@bot.command(name="raid")
+@is_admin()
+async def raid_status(ctx):
+    """Affiche l'etat du mode anti-raid."""
+    if raid_active(ctx.guild.id):
+        since = int(time.time() - raid_mode[ctx.guild.id])
+        await ctx.send(f"Mode raid ACTIF depuis {since}s (action : {RAID_AUTO_ACTION}).")
+    else:
+        await ctx.send("Mode raid inactif.")
+
+
+@bot.command(name="raidon")
+@is_admin()
+async def raid_on(ctx):
+    """Active manuellement le mode anti-raid + lockdown."""
+    raid_mode[ctx.guild.id] = time.time()
+    await ctx.send(f"Mode raid ACTIVE manuellement ({RAID_AUTO_ACTION}).")
+    await log_action(ctx.guild, f"Mode raid active manuellement par {ctx.author}")
+    if RAID_AUTO_LOCKDOWN:
+        await auto_lockdown(ctx.guild, reason=f"Anti-raid manuel ({ctx.author})")
+
+
+@bot.command(name="raidoff")
+@is_admin()
+async def raid_off(ctx):
+    """Desactive le mode anti-raid et deverrouille les salons auto."""
+    raid_mode.pop(ctx.guild.id, None)
+    await auto_unlockdown(ctx.guild, reason=f"Fin raid manuelle ({ctx.author})")
+    await ctx.send("Mode raid DESACTIVE.")
 
 
 @bot.event
