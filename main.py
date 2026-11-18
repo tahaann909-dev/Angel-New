@@ -12,11 +12,13 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 PREFIX = "/"
 
 MIN_ACCOUNT_AGE_DAYS = 2
-RAID_JOIN_THRESHOLD = 5
+RAID_JOIN_THRESHOLD = 8
 RAID_JOIN_WINDOW = 10
 RAID_AUTO_LOCKDOWN = True
 RAID_AUTO_ACTION = "kick"
 RAID_COOLDOWN = 300
+RAID_SUSPICIOUS_AGE_DAYS = 30  # pendant un raid, on ne touche qu'aux comptes plus jeunes que ca
+RAID_COUNT_ONLY_YOUNG = True   # seuls les comptes < RAID_SUSPICIOUS_AGE_DAYS comptent dans le seuil
 BOT_WHITELIST = set()
 
 BLACKLIST_FILE = "blacklist.json"
@@ -164,22 +166,31 @@ async def on_member_join(member):
     else:
         await log_action(guild, f"Role '{AUTOROLE_NAME}' introuvable pour auto-role")
 
+    is_young = account_age < timedelta(days=RAID_SUSPICIOUS_AGE_DAYS)
+
     q = recent_joins.setdefault(guild.id, deque())
-    q.append(time.time())
+    if is_young or not RAID_COUNT_ONLY_YOUNG:
+        q.append(time.time())
     while q and time.time() - q[0] > RAID_JOIN_WINDOW:
         q.popleft()
 
     if raid_active(guild.id):
-        try:
-            if RAID_AUTO_ACTION == "ban":
-                await member.ban(reason="Raid en cours", delete_message_days=0)
-                await log_action(guild, f"[RAID] Ban auto : {member}")
-            elif RAID_AUTO_ACTION == "kick":
-                await member.kick(reason="Raid en cours")
-                await log_action(guild, f"[RAID] Kick auto : {member}")
-        except discord.Forbidden:
-            await log_action(guild, f"[RAID] Action impossible sur {member}")
-        return
+        if not is_young:
+            await log_action(
+                guild,
+                f"[RAID] {member} epargne (compte de {account_age.days}j)"
+            )
+        else:
+            try:
+                if RAID_AUTO_ACTION == "ban":
+                    await member.ban(reason="Raid en cours", delete_message_days=0)
+                    await log_action(guild, f"[RAID] Ban auto : {member} ({account_age.days}j)")
+                elif RAID_AUTO_ACTION == "kick":
+                    await member.kick(reason="Raid en cours")
+                    await log_action(guild, f"[RAID] Kick auto : {member} ({account_age.days}j)")
+            except discord.Forbidden:
+                await log_action(guild, f"[RAID] Action impossible sur {member}")
+            return
 
     if len(q) >= RAID_JOIN_THRESHOLD:
         raid_mode[guild.id] = time.time()
